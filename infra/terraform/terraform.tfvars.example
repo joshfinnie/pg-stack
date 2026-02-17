@@ -1,0 +1,11 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+do_token        = "your-digitalocean-api-token"
+ssh_fingerprint = "your-ssh-key-fingerprint"
+ssh_public_key  = "ssh-ed25519 AAAA... your-email@example.com"
+
+# Optional overrides (defaults shown)
+# username       = "josh"
+# droplet_name   = "pg-core"
+# droplet_region = "nyc3"
+# droplet_size   = "s-1vcpu-1gb"
