@@ -22,3 +22,8 @@ output "ssh_command" {
   description = "SSH command to connect to the droplet"
   value       = "ssh ${var.username}@${digitalocean_droplet.pg.ipv4_address}"
 }
+
+output "ssh_user" {
+  description = "The username created on the droplet"
+  value       = var.username
+}

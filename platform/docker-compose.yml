@@ -14,9 +14,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   pgbouncer:
-    image: edoburu/pgbouncer
+    image: edoburu/pgbouncer:1.22.1
     container_name: pg-bouncer
     restart: always
     ports:
@@ -32,6 +37,11 @@ services:
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 200
       DEFAULT_POOL_SIZE: 20
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   pgdata:
