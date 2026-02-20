@@ -1,0 +1,9 @@
+pg_root_password: "{{ vault_pg_root_password }}"
+project_passwords: "{{ vault_project_passwords }}"
+
+# List of projects to provision. Each entry becomes a database + dedicated user.
+# Add the matching password to vault_project_passwords in the vault.
+projects: []
+# projects:
+#   - name: myapp
+#   - name: analytics

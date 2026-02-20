@@ -1,84 +1,106 @@
-# PG Stack (DigitalOcean)
+# pg-core
 
-A self-hosted PostgreSQL server on DigitalOcean with connection pooling via PgBouncer. Deploy with Terraform, manage databases with simple shell scripts.
+A self-hosted PostgreSQL server on DigitalOcean with connection pooling via PgBouncer. Infrastructure is managed with Terraform, provisioning with Ansible, and day-to-day operations with a small set of shell scripts.
 
 ## Architecture
 
-- **DigitalOcean Droplet** running Ubuntu 22.04 with Docker
-- **PostgreSQL 16** listening on localhost only (port 5432)
-- **PgBouncer** connection pooler exposed on port 6432 (transaction mode)
-- **Firewall** allowing only SSH (22) and PgBouncer (6432)
-- **fail2ban** for brute-force protection
+- **DigitalOcean Droplet** — Ubuntu 22.04, provisioned via Terraform
+- **PostgreSQL 16** — listening on localhost only (port 5432)
+- **PgBouncer** — connection pooler exposed on port 6432 (transaction mode)
+- **Firewall** — inbound SSH (22) and PgBouncer (6432) only
+- **fail2ban** — brute-force protection
+- **Ansible** — installs Docker, hardens the server, deploys platform files, and provisions project databases
+- **Daily backups** — scheduled via cron at 3am, 30-day local retention
 
 ## Prerequisites
 
-- [Terraform](https://developer.hashicorp.com/terraform/install) installed locally
-- A [DigitalOcean](https://www.digitalocean.com/) account with API access
-- An SSH key added to your DigitalOcean account
+- [Terraform](https://developer.hashicorp.com/terraform/install)
+- [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/index.html)
+- A [DigitalOcean](https://www.digitalocean.com/) account with an API token and SSH key registered
 
-## Setup
+## First-time setup
 
-### 1. Configure Terraform
+### 1. DigitalOcean prep
+
+- Generate an API token at **Account > API > Tokens** (read + write scope)
+- Add your SSH public key at **Settings > Security > SSH Keys**
+- Note the fingerprint: `doctl compute ssh-key list`
+
+### 2. Configure Terraform
 
 ```bash
-cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars
+cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars
 ```
 
-Edit `terraform.tfvars` with your credentials:
+Fill in your values:
 
 ```hcl
 do_token        = "dop_v1_xxxxxxxxxxxx"
-ssh_fingerprint = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+ssh_fingerprint = "aa:bb:cc:..."
 ssh_public_key  = "ssh-ed25519 AAAAC3Nz... you@example.com"
 ```
 
-You can find your SSH key fingerprint with:
+### 3. Create the Ansible vault
+
+The vault stores the PostgreSQL root password and any project passwords so they never appear in plaintext.
 
 ```bash
-doctl compute ssh-key list
+ansible-vault create ansible/group_vars/pg/vault.yml
 ```
 
-### 2. Deploy
+Add your secrets:
+
+```yaml
+vault_pg_root_password: "a-strong-root-password"
+
+# Add an entry here for each project you define in group_vars/pg/vars.yml
+vault_project_passwords: {}
+#  myapp: "a-strong-project-password"
+```
+
+### 4. Initialize Terraform
 
 ```bash
-cd infra/terraform
-terraform init
-terraform plan
-terraform apply
+make init
 ```
 
-### 3. Copy files to the droplet
-
-Wait a couple minutes for cloud-init to finish, then:
+### 5. Deploy
 
 ```bash
-export DROPLET_IP=$(cd infra/terraform && terraform output -raw droplet_ip)
-
-scp -r platform $USER@$DROPLET_IP:~/
-scp -r scripts $USER@$DROPLET_IP:~/
+make deploy
 ```
 
-### 4. Start PostgreSQL
+This runs `terraform apply`, waits for SSH to become available, then runs the full Ansible playbook. You will be prompted for your vault password.
+
+## Managing projects
+
+Projects are declared in `ansible/group_vars/pg/vars.yml` and provisioned by Ansible — each gets its own database and user.
+
+### Add a project
+
+**1.** Add it to `ansible/group_vars/pg/vars.yml`:
+
+```yaml
+projects:
+  - name: myapp
+```
+
+**2.** Add its password to the vault:
 
 ```bash
-ssh $USER@$DROPLET_IP
-
-cd ~/platform
-docker compose up -d
-docker ps  # verify pg-core and pg-bouncer are running
+ansible-vault edit ansible/group_vars/pg/vault.yml
 ```
 
-## Usage
+```yaml
+vault_project_passwords:
+  myapp: "a-strong-project-password"
+```
 
-### Create a project database
+**3.** Apply:
 
 ```bash
-cd ~/scripts
-./create_project.sh myapp
+make ansible TAGS=projects
 ```
-
-This creates a database and user, outputs a connection string, and saves credentials to `~/scripts/secrets/projects.csv`.
 
 ### Connect
 
@@ -86,21 +108,28 @@ This creates a database and user, outputs a connection string, and saves credent
 psql "postgres://myapp_user:PASSWORD@DROPLET_IP:6432/myapp"
 ```
 
-### Other commands
+### Ad-hoc operations
+
+These scripts run on the server (SSH in first with `make ssh`):
 
 ```bash
-./list_projects.sh           # list all databases
-./reset_password.sh myapp    # reset a project's password
-./drop_project.sh myapp      # delete a project database and user
-./backup.sh                  # dump all databases (keeps 30 days)
+./scripts/list_projects.sh           # list all databases
+./scripts/reset_password.sh myapp    # rotate a project's password
+./scripts/drop_project.sh myapp      # delete a project database and user
+./scripts/backup.sh                  # run a manual backup
 ```
 
-### Admin access
+## Makefile targets
 
-```bash
-ssh $USER@$DROPLET_IP
-docker exec -it pg-core psql -U postgres
-```
+| Target | Description |
+|---|---|
+| `make init` | `terraform init` |
+| `make infra` | Apply Terraform (provision/update infrastructure) |
+| `make ansible` | Run the full Ansible playbook |
+| `make ansible TAGS=<tag>` | Run a subset: `security`, `docker`, `platform`, `projects` |
+| `make deploy` | `infra` + wait for SSH + `ansible` — full deploy from scratch |
+| `make ssh` | Open an SSH session to the droplet |
+| `make destroy` | Tear down all infrastructure |
 
 ## Maintenance
 
@@ -112,50 +141,53 @@ docker logs pg-bouncer
 # Restart services
 cd ~/platform && docker compose restart
 
-# Update PostgreSQL
+# Update images
 cd ~/platform && docker compose pull && docker compose up -d
 
 # Restore from backup
-gunzip -c backups/all-2024-01-15.sql.gz | docker exec -i pg-core psql -U postgres
-```
-
-## Tear down
-
-```bash
-cd infra/terraform
-terraform destroy
+gunzip -c ~/scripts/backups/all-YYYY-MM-DD.sql.gz | docker exec -i pg-core psql -U postgres
 ```
 
 ## Project structure
 
 ```
-pg-stack/
+pg-core/
+├── Makefile
+├── ansible/
+│   ├── ansible.cfg
+│   ├── pg.yaml                    # Main playbook
+│   ├── templates/
+│   │   └── env.j2                 # .env template (rendered from vault)
+│   └── group_vars/pg/
+│       ├── vars.yml               # Projects list and variable references
+│       └── vault.yml              # Encrypted secrets (ansible-vault)
 ├── infra/terraform/
-│   ├── main.tf                # Droplet + firewall
-│   ├── variables.tf           # Input variables
-│   ├── outputs.tf             # Output values
-│   ├── cloud-init.yml.tpl     # Droplet bootstrap
+│   ├── main.tf                    # Droplet + firewall
+│   ├── variables.tf
+│   ├── outputs.tf
+│   ├── cloud-init.yml.tpl         # User + SSH key bootstrap
 │   └── terraform.tfvars.example
 ├── platform/
-│   ├── docker-compose.yml     # PostgreSQL + PgBouncer
-│   └── .env                   # Root password (git-ignored)
-├── scripts/
-│   ├── create_project.sh
-│   ├── drop_project.sh
-│   ├── reset_password.sh
-│   ├── list_projects.sh
-│   └── backup.sh
-└── .gitignore
+│   ├── docker-compose.yml         # PostgreSQL + PgBouncer
+│   └── .env                       # Generated from vault at deploy time (git-ignored)
+└── scripts/
+    ├── backup.sh
+    ├── create_project.sh
+    ├── drop_project.sh
+    ├── list_projects.sh
+    └── reset_password.sh
 ```
 
 ## Security
 
-- SSH key-only authentication (password auth disabled)
-- PostgreSQL bound to localhost only
-- All external connections go through PgBouncer
-- fail2ban installed for brute-force protection
-- Firewall restricts inbound to SSH + PgBouncer only
-- Consider restricting firewall source IPs for production use
+- SSH key-only authentication (password auth disabled via Ansible)
+- Root login disabled
+- PostgreSQL bound to localhost — all external connections go through PgBouncer
+- UFW enabled with default-deny; only SSH and PgBouncer allowed
+- fail2ban for brute-force protection
+- Secrets managed via Ansible Vault (never in plaintext in the repo)
+- Docker log rotation configured (50 MB / 5 files per container)
+- DigitalOcean droplet monitoring and weekly snapshots enabled
 
 ## License
 
