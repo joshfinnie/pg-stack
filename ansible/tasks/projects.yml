@@ -1,0 +1,37 @@
+- name: Wait for PostgreSQL to be ready
+  command: docker exec pg-core pg_isready -U postgres
+  register: pg_ready
+  retries: 10
+  delay: 3
+  until: pg_ready.rc == 0
+  changed_when: false
+  tags: [projects]
+
+- name: Provision project database and user
+  shell: |
+    docker exec -i pg-core psql -U postgres <<'EOF'
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ item.name }}') THEN
+        CREATE DATABASE {{ item.name }};
+      END IF;
+    END $$;
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ item.name }}_user') THEN
+        CREATE USER {{ item.name }}_user WITH PASSWORD '{{ project_passwords[item.name] }}';
+      END IF;
+    END $$;
+    GRANT ALL PRIVILEGES ON DATABASE {{ item.name }} TO {{ item.name }}_user;
+    EOF
+  loop: "{{ projects }}"
+  changed_when: false
+  tags: [projects]
+
+- name: Grant schema public to project users
+  shell: >
+    docker exec -i pg-core psql -U postgres -d {{ item.name }} -c
+    "GRANT ALL ON SCHEMA public TO {{ item.name }}_user"
+  loop: "{{ projects }}"
+  changed_when: false
+  tags: [projects]

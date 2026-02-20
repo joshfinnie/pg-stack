@@ -1,0 +1,43 @@
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    upgrade: dist
+  tags: [security, docker]
+
+- name: Install security packages
+  apt:
+    name:
+      - fail2ban
+      - ufw
+    state: present
+  tags: [security]
+
+- name: Harden SSH config
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+  notify: Restart SSH
+  tags: [security]
+
+- name: Allow OpenSSH
+  ufw:
+    rule: allow
+    name: OpenSSH
+  tags: [security]
+
+- name: Allow PgBouncer
+  ufw:
+    rule: allow
+    port: '6432'
+    proto: tcp
+  tags: [security]
+
+- name: Enable UFW
+  ufw:
+    state: enabled
+    policy: deny
+  tags: [security]
